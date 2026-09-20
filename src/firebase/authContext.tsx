@@ -8,39 +8,39 @@ import {
 } from 'firebase/auth';
 import { auth } from './config';
 
-/**
- * Translates Firebase & Google Auth error codes into clear, user-friendly Arabic messages.
- */
 export function formatAuthError(err: any): string {
   const code = err?.code || '';
   const message = err?.message || String(err || '');
 
   if (code === 'auth/popup-closed-by-user') {
-    return 'تم إغلاق نافذة تسجيل الدخول من Google قبل اختيار الحساب.';
-  }
-  if (code === 'auth/popup-blocked') {
-    return 'قام المتصفح بحظر النافذة المنبثقة. يرجى السماح بالنوافذ المنبثقة لـ Google في متصفحك.';
-  }
-  if (code === 'auth/cancelled-popup-request') {
-    return 'تم إلغاء طلب تسجيل الدخول لوجود نافذة تسجيل دخول أخرى مفتوحة بالفعل.';
-  }
-  if (code === 'auth/network-request-failed') {
-    return 'تعذر الاتصال بخوادم Google. يرجى التحقق من اتصالك بالإنترنت والمحاولة مجدداً.';
-  }
-  if (code === 'auth/unauthorized-domain') {
-    return 'هذا النطاق غير مصرح به في إعدادات Firebase Authentication (Authorized Domains).';
-  }
-  if (code === 'auth/operation-not-allowed') {
-    return 'تسجيل الدخول عبر Google غير مفعّل في Firebase Authentication Console.';
-  }
-  if (code === 'auth/account-exists-with-different-credential') {
-    return 'يوجد حساب مسجل بالفعل ببريد إلكتروني مطابق عبر وسيلة دخول أخرى.';
-  }
-  if (message.includes('403') || message.includes('access_denied')) {
-    return 'تم رفض الوصول (403): تأكد من صحة حساب Google المختار.';
+    return 'تم إغلاق نافذة Google قبل اختيار الحساب.';
   }
 
-  return message || 'فشل تسجيل الدخول بحساب Google. يرجى إعادة المحاولة.';
+  if (code === 'auth/popup-blocked') {
+    return 'المتصفح حظر نافذة Google. اسمح بالنوافذ المنبثقة ثم حاول مرة أخرى.';
+  }
+
+  if (code === 'auth/cancelled-popup-request') {
+    return 'هناك نافذة تسجيل دخول Google مفتوحة بالفعل.';
+  }
+
+  if (code === 'auth/network-request-failed') {
+    return 'تعذر الاتصال بخوادم Google. تحقق من الإنترنت.';
+  }
+
+  if (code === 'auth/unauthorized-domain') {
+    return 'هذا النطاق غير مضاف إلى Authorized Domains في Firebase.';
+  }
+
+  if (code === 'auth/operation-not-allowed') {
+    return 'تسجيل الدخول بواسطة Google غير مفعّل في Firebase.';
+  }
+
+  if (code === 'auth/account-exists-with-different-credential') {
+    return 'يوجد حساب بنفس البريد باستخدام طريقة دخول أخرى.';
+  }
+
+  return message || 'فشل تسجيل الدخول بحساب Google.';
 }
 
 interface AuthContextType {
@@ -57,7 +57,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -69,47 +69,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const getIdToken = async (): Promise<string> => {
-    if (!user) {
+    if (!auth.currentUser) {
       throw new Error('يرجى تسجيل الدخول بحساب Google أولاً');
     }
-    return user.getIdToken();
+
+    return auth.currentUser.getIdToken();
   };
 
-  /**
-   * Standard Google Auth Provider:
-   * Uses only standard identity scopes (openid, profile, email).
-   * Does NOT request sensitive or restricted scopes (like cloud-platform)
-   * which cause Google 403 access_denied / unverified app blocks.
-   */
   const createGoogleProvider = () => {
     const provider = new GoogleAuthProvider();
-    // Prompts user to choose an account on their device
-    provider.setCustomParameters({ prompt: 'select_account' });
+
+    provider.setCustomParameters({
+      prompt: 'select_account',
+    });
+
     return provider;
   };
 
-  const signInWithGoogle = async (): Promise<{ user: User; accessToken?: string }> => {
+  const signInWithGoogle = async () => {
     const provider = createGoogleProvider();
+
     const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    // Access token for Google identity APIs, or fallback to Firebase idToken
-    const accessToken = credential?.accessToken || (await result.user.getIdToken());
+
     setUser(result.user);
-    return { user: result.user, accessToken };
+
+    // مهم:
+    // نستخدم Firebase ID Token للمصادقة مع السيرفر،
+    // وليس Google OAuth access token كأنه مفتاح Gemini.
+    const idToken = await result.user.getIdToken();
+
+    return {
+      user: result.user,
+      accessToken: idToken,
+    };
   };
 
-  const signInAndLinkGoogle = async (): Promise<{ user: User; accessToken?: string }> => {
+  const signInAndLinkGoogle = async () => {
     return signInWithGoogle();
   };
 
-  const relinkGoogle = async (): Promise<{ user: User; accessToken?: string }> => {
+  const relinkGoogle = async () => {
     return signInWithGoogle();
   };
 
   const signOut = async () => {
-    if (auth.currentUser) {
-      await fbSignOut(auth);
-    }
+    await fbSignOut(auth);
     setUser(null);
   };
 
@@ -132,8 +136,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export function useAuth() {
   const context = useContext(AuthContext);
+
   if (!context) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
+
   return context;
 }
